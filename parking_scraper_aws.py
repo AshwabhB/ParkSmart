@@ -15,9 +15,6 @@ from zoneinfo import ZoneInfo
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 def save_to_s3(garage_data, garage_name, s3_bucket):
-    """
-    Save garage data to CSV files in S3
-    """
     s3 = boto3.client('s3')
     filename = f"{garage_name.replace(' ', '_').lower()}.csv"
     
@@ -142,9 +139,6 @@ def get_parking_status(s3_bucket):
         }
 
 def lambda_handler(event, context):
-    """
-    AWS Lambda handler function
-    """
     print("Starting parking data collection...") 
     S3_BUCKET = 'sjsu-parking-data'
     
