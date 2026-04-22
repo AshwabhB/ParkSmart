@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+from datetime import date
 
 st.set_page_config(
     page_title="ParkSmart — SJSU Parking",
@@ -17,6 +18,19 @@ CSV_FILES = {
     'South Campus Garage': 'south_campus_garage.csv',
 }
 DAYS_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+
+@st.cache_resource
+def load_predictor():
+    try:
+        import sys
+        sys.path.insert(0, os.path.dirname(__file__))
+        from predictions.parking_predictor import ParkingPredictor
+        predictor = ParkingPredictor()
+        predictor.load_models()
+        return predictor
+    except Exception:
+        return None
 
 
 @st.cache_data(ttl=300)
@@ -93,6 +107,46 @@ for col, garage in zip(cols, GARAGES):
             )
         else:
             st.metric(label=garage, value="N/A")
+
+st.markdown("---")
+st.subheader("Predict Occupancy")
+
+predictor = load_predictor()
+if predictor is None:
+    st.warning("ML models not found. Run `python predictions/parking_predictor.py` to train and save models.")
+else:
+    col_l, col_r = st.columns(2)
+    with col_l:
+        pred_garage = st.selectbox("Garage", GARAGES, key="pred_garage")
+        pred_date = st.date_input("Date", value=date.today(), key="pred_date")
+    with col_r:
+        pred_hour = st.slider("Hour of Day", 0, 23, 9, key="pred_hour")
+        st.markdown(f"**Selected time:** {pred_hour:02d}:00")
+
+    if st.button("Predict"):
+        from datetime import datetime as dt
+        pred_dt = dt.combine(pred_date, dt.min.time())
+        predictions, best_garage, alternatives = predictor.get_best_garage(pred_dt, pred_hour)
+        selected_pct = predictions[pred_garage]
+        color = occupancy_color(selected_pct)
+
+        st.markdown(
+            f"""
+            <div style='background:{color};padding:16px;border-radius:10px;color:white;margin-bottom:12px;'>
+                <b>{pred_garage}</b> at <b>{pred_hour:02d}:00</b> — predicted occupancy:
+                <span style='font-size:28px;font-weight:bold;'> {selected_pct:.1f}%</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if selected_pct >= 90 and alternatives:
+            st.markdown("**Better alternatives:**")
+            for alt, occ in alternatives[:2]:
+                if alt != pred_garage:
+                    st.markdown(f"- **{alt}** — {occ:.1f}%")
+
+        st.markdown(f"**Best option right now:** {best_garage[0]} ({best_garage[1]:.1f}%)")
 
 st.markdown("---")
 st.subheader(f"Occupancy Trend — {selected_garage}")

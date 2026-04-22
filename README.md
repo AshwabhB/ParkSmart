@@ -2,7 +2,7 @@
 
 > *Not officially affiliated with San Jose State University.*
 
-A **data-driven web application** that helps SJSU students and faculty make informed decisions about parking by predicting garage availability. An automated **AWS Lambda** scraper collects occupancy data from all four SJSU parking garages every 15 minutes, storing time-series records in **AWS S3**. A **Streamlit** dashboard visualises historical trends and occupancy patterns.
+A **data-driven web application** that helps SJSU students and faculty make informed decisions about parking by predicting garage availability. An automated **AWS Lambda** scraper collects occupancy data from all four SJSU parking garages every 15 minutes, storing time-series records in **AWS S3**. A trained **MLPRegressor** neural network predicts future occupancy, and a **Streamlit** dashboard surfaces both historical trends and ML-based predictions.
 
 ---
 
@@ -16,6 +16,8 @@ A **data-driven web application** that helps SJSU students and faculty make info
 | AWS SDK | Boto3 |
 | Web Scraping | BeautifulSoup4, Requests |
 | Data Format | CSV (time-series) |
+| ML Model | scikit-learn MLPRegressor, StandardScaler |
+| Model Persistence | joblib |
 | Dashboard | Streamlit |
 | Visualisation | Matplotlib, Pandas |
 | Time Handling | `zoneinfo` (America/Los_Angeles), `datetime` |
@@ -45,6 +47,8 @@ CloudWatch Events (every 15 min)
               west_garage.csv
               south_campus_garage.csv
         │
+        ├──► predictions/parking_predictor.py  (MLPRegressor per garage)
+        │
         ▼
   Streamlit Dashboard  ──► parking_ui.py
 ```
@@ -55,16 +59,27 @@ CloudWatch Events (every 15 min)
 
 ```
 ParkSmart/
-├── parking_scraper_aws.py     # AWS Lambda handler — scrape, parse, store
-├── parking_ui.py              # Streamlit dashboard
-├── plot_parking_data.py       # Standalone Matplotlib visualisation script
-├── scrapingLocal.py           # Local dev scraper (runs every 15 min via sleep loop)
-├── transform_csv.py           # One-time migration utility (legacy schema → current)
-├── north_garage.csv           # Historical data — North Garage
-├── south_garage.csv           # Historical data — South Garage
-├── south_campus_garage.csv    # Historical data — South Campus Garage
-├── west_garage.csv            # Historical data — West Garage
+├── parking_scraper_aws.py        # AWS Lambda handler — scrape, parse, store
+├── parking_ui.py                 # Streamlit dashboard with ML predictions
+├── plot_parking_data.py          # Standalone Matplotlib visualisation script
+├── scrapingLocal.py              # Local dev scraper (15-min loop)
+├── transform_csv.py              # One-time migration utility (legacy schema → current)
+├── north_garage.csv              # Historical data — North Garage
+├── south_garage.csv              # Historical data — South Garage
+├── south_campus_garage.csv       # Historical data — South Campus Garage
+├── west_garage.csv               # Historical data — West Garage
 ├── parking_occupancy_by_day.png  # Static occupancy visualisation
+├── predictions/
+│   ├── parking_predictor.py      # ParkingPredictor class (train, predict, save/load)
+│   └── models/                   # Trained model and scaler files (.joblib)
+│       ├── north_garage_model.joblib
+│       ├── north_garage_scaler.joblib
+│       ├── south_garage_model.joblib
+│       ├── south_garage_scaler.joblib
+│       ├── west_garage_model.joblib
+│       ├── west_garage_scaler.joblib
+│       ├── south_campus_garage_model.joblib
+│       └── south_campus_garage_scaler.joblib
 ├── requirements.txt
 └── README.md
 ```
@@ -87,16 +102,37 @@ Each CSV file uses the following columns:
 
 ---
 
+## ML Model
+
+`predictions/parking_predictor.py` trains a separate **MLPRegressor** (neural network with hidden layers `[100, 50]`, ReLU activation, Adam solver) for each of the four garages.
+
+**Features used:**
+- Hour of day
+- Day of week (numeric + one-hot encoded)
+- Garage identity (one-hot encoded)
+
+**Output:** predicted occupancy percentage (0–100)
+
+**`get_best_garage(date, hour)`** runs predictions across all four garages and returns the lowest-occupancy recommendation along with alternatives under 90%.
+
+---
+
 ## Setup
 
 ```bash
 pip install -r requirements.txt
 ```
 
-**Run the Streamlit dashboard** (reads local CSV files):
+**Run the Streamlit dashboard:**
 
 ```bash
 streamlit run parking_ui.py
+```
+
+**Retrain ML models** (if you have new CSV data):
+
+```bash
+python predictions/parking_predictor.py
 ```
 
 **Run the local scraper** (collects data every 15 minutes):
@@ -105,7 +141,7 @@ streamlit run parking_ui.py
 python scrapingLocal.py
 ```
 
-**Generate the static occupancy chart**:
+**Generate the static occupancy chart:**
 
 ```bash
 python plot_parking_data.py
@@ -115,16 +151,7 @@ python plot_parking_data.py
 
 ## AWS Lambda Deployment
 
-`parking_scraper_aws.py` is deployed as a Lambda function triggered by an **Amazon EventBridge** (CloudWatch Events) rule on a `rate(15 minutes)` schedule.
-
-```
-S3 append-or-create pattern:
-  try:
-      existing = s3.get_object(Bucket=bucket, Key=key)  # read existing CSV
-  except NoSuchKey:
-      write header row first              # new file
-  append new row → s3.put_object(...)     # write back
-```
+`parking_scraper_aws.py` is deployed as a Lambda function triggered by an **Amazon EventBridge** rule on a `rate(15 minutes)` schedule.
 
 **Required Lambda environment:**
 - IAM role with `s3:GetObject` and `s3:PutObject` on the `sjsu-parking-data` bucket
@@ -138,17 +165,8 @@ S3 append-or-create pattern:
 | Phase | Status | Description |
 |---|---|---|
 | 1 — Data Collection | ✅ Complete | Lambda scraper + S3 storage pipeline |
-| 2 — ML Modelling | 🔄 In Progress | Train time-series occupancy forecasting models on collected data |
-| 3 — Predictive UI | 📋 Planned | Integrate model predictions into the Streamlit dashboard |
-
----
-
-## Key Design Decisions
-
-- **Lambda over EC2** — charges per invocation; far cheaper than an always-on instance for a 15-minute polling job.
-- **S3 CSV over a database** — zero operational overhead; the append-or-create pattern keeps the pipeline simple while the dataset is still small.
-- **`zoneinfo` for Pacific Time** — ensures timestamps reflect local campus time regardless of where Lambda executes.
-- **Regex on raw text** — the SJSU portal's HTML structure is inconsistent; extracting from `soup.get_text()` with a targeted pattern is more robust than navigating the DOM.
+| 2 — ML Modelling | ✅ Complete | MLPRegressor trained per garage, models saved with joblib |
+| 3 — Predictive UI | ✅ Complete | Streamlit dashboard with live predictions and historical trends |
 
 ---
 
